@@ -1,0 +1,248 @@
+---
+title: "DataCamp Data Analyst Professional Certificate Case Study"
+author: "Naman Kanwar"
+date: "16/11/2021"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+# Project Brief
+You are working as a data analyst for a yacht and boat sales website. The marketing team is preparing a weekly newsletter for boat owners. The newsletter is designed to help sellers to get more views of their boat, as well as stay on top of market trends.
+They would like you to take a look at the recent data and help them learn more about the characteristics of the most viewed boat listings in the last 7 days - is it the most expensive boats that get the most views? Are there common features among the most viewed boats?
+
+# Loading required libraries
+
+```{r,message=FALSE,warning=FALSE}
+library(data.table)
+library(skimr)
+library(tidyverse)
+library(plotly)
+library(priceR)
+
+source("Functions.R")
+```
+
+# Importing the data
+
+```{r,message=FALSE,warning=FALSE}
+dt <- fread("https://s3.amazonaws.com/talent-assets.datacamp.com/boat_data.csv")
+```
+
+# Initial EDA
+
+```{r,message=FALSE,warning=FALSE}
+skim(dt)
+```
+
+Few points to note :
+
+* **Price** - Has currency and amount separated by a space, we will split this into 2 columns (Currency, Amount). The resulting "Currency" column will be factorized.
+* **Type** - This column will be split into 2 as well - "Condition" and "Fuel". Both the resulting columns will be factorized. "Condition" column will also need to be cleaned up a bit after the split to get rid of some values that should be in "Fuel" column instead.
+* **Material** - Can be converted to factors.
+* A new column named **"view_pct"** will be added - this is the % of total views for that listing w.r.t total views of all listings in last 7 days.
+
+```{r,message=FALSE,warning=FALSE}
+dt$view_pct <- 100*dt$`Number of views last 7 days`/sum(dt$`Number of views last 7 days`)
+
+dt <- dt %>% 
+  separate(Price,c("Currency","Amount"),sep=" ",remove=TRUE,convert=TRUE)
+
+dt <- dt %>% 
+  separate(Type,c("Condition","Fuel"),sep=",",remove=TRUE,convert=TRUE)
+
+dt[Condition=="",Condition:=NA]
+
+dt[Condition=="Diesel" & is.na(Fuel),Fuel:="Diesel"]
+dt[Condition=="Diesel" & Fuel=="Diesel",Condition:=NA]
+
+dt[Condition=="Unleaded" & is.na(Fuel),Fuel:="Unleaded"]
+dt[Condition=="Unleaded" & Fuel=="Unleaded",Condition:=NA]
+
+dt[Condition=="Electric" & is.na(Fuel),Fuel:="Electric"]
+dt[Condition=="Electric" & Fuel=="Electric",Condition:=NA]
+
+dt[,Condition := as.factor(Condition)]
+dt[,Fuel := as.factor(Fuel)]
+dt[,Material := as.factor(Material)]
+```
+
+Now lets convert the Amount column to a standard currency amount, CAD in this case (based on the currency in "Currency" column and the average exchange rate of that currency to CAD from 1st Jan of this year till yesterday)
+
+```{r,message=FALSE,warning=FALSE}
+conversions <- sapply(unique(dt$Currency),avg_ex) %>% 
+  data.frame() %>% 
+  rownames_to_column() %>%
+  `colnames<-`(c('Currency','conv'))
+
+dt <- dt %>% 
+  left_join(conversions,by='Currency') %>%
+  mutate(Amount_CAD = Amount*conv) %>% 
+  select(-c(14))
+  
+
+dt[,Currency := as.factor(Currency)]
+```
+
+Lets skim through our data once more -
+
+```{r,message=FALSE,warning=FALSE}
+skim(dt)
+```
+
+# Analysis
+
+Lets look at the log distribution of the "Number of views last 7 days" metric.
+
+```{r,echo=FALSE,message=FALSE,warning=FALSE}
+logmean <- round(mean(log(dt$`Number of views last 7 days`)),2)
+unlogmean <- round(exp(logmean),2)
+```
+
+```{r,message=FALSE,warning=FALSE}
+hist(log(dt$`Number of views last 7 days`))
+abline(v=mean(log(dt$`Number of views last 7 days`)),col="red",lwd=3)
+```
+
+Above is a histogram of its log distribution. The red vertical line represents the mean of the distribution.
+The log mean is `r logmean` which corresponds to **`r unlogmean`**. What is means is that on average, each listing gets about **`r unlogmean`** views in 7 days.
+
+Now lets look at the quantiles of the same, to get more idea about the distribution of views.
+
+```{r,message=FALSE,warning=FALSE}
+quantile(dt$`Number of views last 7 days`,c(.7,.8,.9,.95,.99))
+```
+
+As we can see, the top 10% listings in terms of number of views are the ones that have over **283** views in the last 7 days. The top 5% listings get over **389** views in 7 days. This shows that the data is heavily skewed towards lower values of "Number of views last 7 days", with only a few listings getting much higher views.
+
+
+## Which boat types get most views?
+
+Lets look at the proportion of views per boat type, top 10 boat types in terms of views -
+
+```{r,message=FALSE,warning=FALSE}
+dt[, .(views = sum(`Number of views last 7 days`),views_prop = sum(view_pct)),by=.(`Boat Type`)][order(-views)][1:10]
+pie_plot(dt$`Boat Type`)
+```
+
+We can see that "Motor Yacht" boats are getting almost 24% of the total views in the last 7 days, followed by "Sport Boat" at 17% and "Cabin boat" & "Flybridge" at about 8-9% each.
+
+**Motor Yachts** seem to be the most popular type of boats.
+
+## Which Manufacturers boats are getting most views?
+
+Lets look at the proportion of views per Manufacturer, top 10 in terms of views -
+
+```{r,message=FALSE,warning=FALSE}
+dt[Manufacturer!="", .(views = sum(`Number of views last 7 days`),views_prop = sum(view_pct)),by=.(Manufacturer)][order(-views)][1:10]
+
+pie_plot(dt$Manufacturer)
+
+```
+
+Here we see that for a lot of listings, which constitue about 11% of the total views, the Manufacturer is not mentioned. Nonetheless, the most popular manufacturers are -
+
+* **BÃ©nÃ©teau power boats** with almost 4% view share
+* **Sunseeker power boats** , **Jeanneau power boats** with 3.5% view share
+* **Sea Ray power boats** with about 3.1% view share
+
+## Which Material is most popular?
+
+
+```{r,message=FALSE,warning=FALSE}
+dt[, .(views = sum(`Number of views last 7 days`),views_prop = sum(view_pct)),by=.(Material)][order(-views)][1:10]
+pie_plot(dt$Material)
+```
+
+As seen above, **GRP** is the most popular material, with 61% of all the listings views being those where the material is **GRP**
+
+
+## Which location is most popular?
+
+
+```{r,message=FALSE,warning=FALSE}
+dt[, .(views = sum(`Number of views last 7 days`),views_prop = sum(view_pct)),by=.(Location)][order(-views)][1:10]
+pie_plot(dt$Location)
+```
+
+Boats from **Netherlands** location are getting most views.
+
+## Which year built is getting most views?
+
+```{r,message=FALSE,warning=FALSE}
+dt[, .(views = sum(`Number of views last 7 days`),views_prop = sum(view_pct)),by=.(`Year Built`)][order(-views)][1:10]
+pie_plot(dt$`Year Built`)
+```
+
+Boats from the year 2020 get the most views, about 12% of all views in the last 7 days were of boats built in 2020.
+
+## What condition boats are most popular?
+
+```{r,message=FALSE,warning=FALSE}
+dt[, .(views = sum(`Number of views last 7 days`),views_prop = sum(view_pct)),by=.(Condition)][order(-views)][1:10]
+pie_plot(dt$Condition)
+
+```
+
+Used boats are most likely to be viewed, they make up for 77% of all the listing views.
+
+## What type of fuel is most popular?
+
+```{r}
+dt[, .(views = sum(`Number of views last 7 days`),views_prop = sum(view_pct)),by=.(Fuel)][order(-views)][1:10]
+pie_plot(dt$Fuel)
+```
+
+Diesel and Unleaded fuel types make up for most of the viewed boats, at about 80% together.
+
+## Which Currency is most viewed?
+
+
+```{r}
+dt[, .(views = sum(`Number of views last 7 days`),views_prop = sum(view_pct)),by=.(Currency)][order(-views)]
+pie_plot(dt$Currency)
+```
+
+EUR and CHF currencies are most looked at, with the other 2 being minority.
+
+## Are more expensive boats viewed more?
+
+```{r,message=FALSE,warning=FALSE}
+dtx <- log(dt$Amount_CAD)
+dty <- dt$`Number of views last 7 days`
+h <- hist(log(dt$Amount_CAD))
+breaks <- data.frame("beg"=h$breaks[-length(h$breaks)],"end"=h$breaks[-1])
+sums <- apply(breaks, MARGIN=1, FUN=function(x) { sum(dty[dtx >= x[1] & dtx < x[2] ]) })
+h$counts <- sums
+mean <- mean(log(dt$Amount_CAD))
+median <- median(log(dt$Amount_CAD))
+plot(h, ylab="Total Views (L7D)", main="Sum of L7D views Within Bins")
+abline(v=mean,col="red",lwd=3)
+abline(v=median,col="blue",lwd=3)
+```
+
+```{r,echo=FALSE,message=FALSE,warning=FALSE}
+unlogmean2 <- round(exp(mean),0)
+```
+
+
+Most views are ones where the price is close to the mean of the distribution.
+Thus, no - the boats that are more expensive do not get more views. Most views are at a price range of around CAD 154218.
+
+# Conclusion -
+
+After going through the data, the following conclusions can be made -
+
+* Listings for **Motor Yachts and sport boats** are viewed more than others.
+* Listings for **BÃ©nÃ©teau power boats** as the Manufacturer are viewed more than others
+* Boats made out of **GRP** material are viewed more than others
+* Boats registered in **Netherlands Â» In verkoophaven** are viewed more than others
+* Boats built in the **year 2020** get more views than others
+* **Used boats** get more views than others
+* **Diesel and Unleaded** fuel type is preferred over other fuels
+* Listings posted in **EUR or CHF** are viewed more than others
+* Listings are are in the **mid price range** are viewed more than cheaper or more expensive boats.
+
+
